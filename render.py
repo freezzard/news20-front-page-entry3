@@ -1,368 +1,453 @@
-"""Compose the Friday 20 November 2026 newspaper page at 2048px
-and export the 1024px entry.png the grader runs on.
+# Renders the Friday 20 November 2026 front page to entry.png.
+#
+# Layout, top to bottom on a 1024 by 1024 page: kicker rules, giant
+# serif masthead date, one-line sub-headline, six-number strip, region
+# tally bar, three large hero cards with painted scenes, ten medium
+# cards in two rows of five, a date-check box, then the world map with
+# numbered pins beside 22 one-line briefs in two columns, and a footer
+# attribution line. Every text block is measured before it is drawn;
+# anything that would overflow is reported instead of clipped.
 
-Layout, top to bottom: kicker and masthead, the day in numbers,
-the region tally bar, three hero cards, ten mid cards in two
-rows, the date-check strip, then the pinned world map beside the
-briefs. Card text budgets were measured against the real fonts,
-so every headline and summary fits its card without clipping.
-The map pins and the brief dots use the same numbering as the
-cards. Scenes carry no text of their own.
-"""
-
+import hashlib
 import os
+import sys
 
 from PIL import Image, ImageDraw
 
-import data
-from draw import (centered_text, chip, draw_map_pin, draw_world_map,
-                  draw_wrapped, load_font, map_point, wrap_lines)
-from scenes import build_scene
+from data import (
+    BRIEF_ITEMS,
+    BRIEF_REGIONS,
+    BRIEFS_HEADING,
+    DATE_CHECK_LINES,
+    DATE_CHECK_TITLE,
+    FOOTER_LINE,
+    HERO_STORIES,
+    MAP_CAPTION,
+    MAP_HEADING,
+    MASTHEAD_DATE,
+    MASTHEAD_KICKER_LEFT,
+    MASTHEAD_KICKER_RIGHT,
+    MID_STORIES,
+    NUMBER_STRIP,
+    REGION_ORDER,
+    REGION_PAINT,
+    SUBHEAD_LINE,
+)
+from draw import (
+    CARD,
+    CARD_EDGE,
+    INK,
+    INK_SOFT,
+    MUTED,
+    PAPER,
+    RED,
+    RULE,
+    draw_card_frame,
+    draw_chip,
+    draw_number_badge,
+    draw_rule,
+    draw_wrapped,
+    fit_font_size,
+    load_font,
+    text_height_px,
+    text_width_px,
+    wrap_text,
+)
+from scenes import paint_scene
 
-PAGE_W = 2048
-PAGE_H = 2048
-MARGIN = 64
-CONTENT_W = PAGE_W - 2 * MARGIN
-PAPER = (247, 241, 222)
-CARD_BG = (253, 250, 242)
-INK = (26, 25, 22)
-MUTED = (96, 89, 74)
-ACCENT_RED = (176, 32, 26)
-RULE = (58, 54, 46)
-SEA_FILL = (206, 220, 222)
-LAND_FILL = (196, 182, 140)
-PIN_FILL = (190, 44, 34)
+PAGE_W = 1024
+PAGE_H = 1024
+MARGIN = 24
+CONTENT_W = PAGE_W - MARGIN * 2
+OUTPUT_NAME = "entry.png"
+SIZE_CAP = 1048576
 
-# Leader offsets (dx, dy, in page pixels) for pins that would sit
-# on top of one another; a thin line joins each moved pin back
-# to its true spot on the map.
-PIN_OFFSETS = {
-    1: (16, -14),
-    4: (20, -16),
-    5: (22, 10),
-    7: (-26, 20),
-    9: (-18, -18),
-    13: (22, -16),
-}
+OVERFLOW_NOTES = []
 
+CONTINENTS = [
+    [(-168, 66), (-140, 70), (-125, 72), (-110, 73), (-95, 80), (-85, 80), (-80, 73), (-75, 62), (-65, 60), (-60, 47), (-70, 42), (-75, 35), (-80, 32), (-85, 30), (-90, 21), (-97, 16), (-94, 17), (-86, 13), (-83, 9), (-79, 9), (-92, 15), (-105, 20), (-110, 24), (-117, 33), (-125, 40), (-124, 48), (-135, 58), (-150, 60), (-165, 60)],
+    [(-58, 64), (-45, 60), (-40, 65), (-30, 68), (-22, 70), (-25, 76), (-40, 76), (-55, 74), (-60, 70)],
+    [(-79, 9), (-77, 4), (-80, -3), (-81, -6), (-77, -12), (-72, -18), (-70, -23), (-70, -30), (-72, -37), (-73, -44), (-70, -50), (-66, -55), (-68, -52), (-62, -45), (-58, -38), (-52, -33), (-48, -28), (-41, -23), (-35, -9), (-35, -6), (-44, -3), (-50, 0), (-55, 5), (-60, 8), (-68, 11), (-75, 10)],
+    [(-17, 15), (-16, 20), (-10, 31), (-5, 35), (0, 36), (10, 37), (11, 34), (20, 32), (30, 31), (32, 31), (35, 28), (37, 22), (40, 15), (43, 11), (48, 11), (51, 10), (46, 5), (41, -2), (40, -10), (36, -18), (33, -26), (28, -33), (20, -35), (17, -29), (14, -22), (12, -18), (9, -1), (9, 4), (4, 6), (-8, 5), (-13, 8), (-17, 12)],
+    [(-10, 36), (-9, 43), (-2, 44), (-1, 46), (-4, 48), (0, 50), (2, 51), (5, 53), (8, 55), (10, 57), (8, 58), (5, 58), (5, 60), (10, 62), (12, 65), (18, 69), (25, 71), (30, 70), (40, 68), (50, 69), (60, 69), (70, 72), (80, 73), (90, 75), (100, 77), (110, 74), (120, 73), (130, 72), (140, 72), (150, 70), (160, 70), (170, 67), (178, 65), (178, 62), (170, 60), (162, 56), (158, 52), (150, 59), (142, 54), (141, 50), (140, 45), (135, 43), (130, 42), (127, 40), (126, 38), (122, 38), (120, 35), (115, 32), (110, 30), (108, 22), (105, 18), (103, 12), (100, 8), (98, 10), (95, 15), (92, 21), (89, 22), (86, 20), (82, 17), (80, 13), (77, 8), (75, 12), (72, 20), (68, 23), (66, 25), (62, 25), (58, 26), (56, 27), (54, 26), (52, 25), (50, 26), (48, 29), (48, 30), (50, 29), (54, 28), (56, 26), (57, 25), (52, 24), (50, 24), (48, 22), (44, 20), (42, 15), (39, 13), (35, 17), (33, 19), (30, 22), (28, 26), (27, 31), (26, 35), (22, 37), (19, 38), (16, 38), (12, 40), (8, 38), (3, 38), (-2, 37)],
+    [(114, -22), (114, -30), (115, -35), (120, -34), (124, -33), (129, -32), (132, -32), (135, -35), (137, -35), (140, -38), (145, -38), (150, -37), (153, -32), (153, -27), (150, -23), (146, -19), (142, -15), (142, -11), (137, -12), (135, -15), (132, -12), (130, -13), (126, -14), (122, -17), (118, -20)],
+    [(-5, 50), (-3, 53), (-5, 56), (-3, 58), (-1, 57), (0, 53), (1, 51)],
+    [(130, 31), (132, 33), (135, 34), (137, 35), (139, 35), (140, 37), (141, 39), (141, 41), (142, 44), (144, 44), (143, 42), (141, 39), (140, 36), (139, 34), (136, 33), (133, 34), (131, 32)],
+    [(167, -45), (170, -42), (173, -40), (175, -38), (177, -38), (174, -41), (172, -43), (168, -46)],
+    [(44, -16), (47, -15), (50, -16), (50, -20), (47, -24), (44, -25), (43, -21)],
+    [(95, 5), (98, 3), (101, 0), (104, -3), (106, -6), (104, -6), (100, -2), (97, 3)],
+    [(109, 1), (111, 3), (114, 4), (117, 6), (118, 2), (117, -2), (114, -3), (110, -3), (109, 0)],
+    [(131, -1), (135, -2), (138, -4), (141, -5), (145, -6), (147, -7), (150, -9), (146, -8), (141, -8), (136, -4), (132, -2)],
+    [(105, -6), (108, -7), (111, -7), (114, -8), (114, -7), (110, -6), (106, -6)],
+]
 
-def fit_font_size(draw, text, kind, start_size, max_width):
-    trial_size = start_size
-    trial_font = load_font(kind, trial_size)
-    trial_width = draw.textlength(text, font=trial_font)
-    while trial_width > max_width and trial_size > 20:
-        trial_size = trial_size - 2
-        trial_font = load_font(kind, trial_size)
-        trial_width = draw.textlength(text, font=trial_font)
-    return trial_size
-
-
-def draw_header(page_draw):
-    kicker_font = load_font("sans-xbold", 30)
-    page_draw.text((MARGIN, 38), data.PAGE_KICKER_LEFT, font=kicker_font, fill=ACCENT_RED)
-    right_font = load_font("sans-bold", 24)
-    right_width = page_draw.textlength(data.PAGE_KICKER_RIGHT, font=right_font)
-    page_draw.text((PAGE_W - MARGIN - right_width, 42), data.PAGE_KICKER_RIGHT, font=right_font, fill=INK)
-    page_draw.line((MARGIN, 84, PAGE_W - MARGIN, 84), fill=INK, width=4)
-    page_draw.line((MARGIN, 92, PAGE_W - MARGIN, 92), fill=INK, width=1)
-    masthead_size = fit_font_size(page_draw, data.PAGE_DATE_LONG, "serif-black", 140, CONTENT_W)
-    masthead_font = load_font("serif-black", masthead_size)
-    centered_text(page_draw, PAGE_W // 2, 104, data.PAGE_DATE_LONG, masthead_font, INK)
-    subhead_size = fit_font_size(page_draw, data.PAGE_SUBHEAD, "serif-italic", 40, CONTENT_W)
-    subhead_font = load_font("serif-italic", subhead_size)
-    subhead_y = 104 + masthead_size + 24
-    centered_text(page_draw, PAGE_W // 2, subhead_y, data.PAGE_SUBHEAD, subhead_font, (92, 44, 30))
-    return subhead_y + subhead_size + 18
-
-
-def draw_numbers(page_draw, top_y):
-    col_w = CONTENT_W // len(data.DAY_NUMBERS)
-    number_font = load_font("serif-black", 57)
-    label_font = load_font("sans", 20)
-    col_index = 0
-    for figure_text, figure_label in data.DAY_NUMBERS:
-        col_x = MARGIN + col_index * col_w
-        centered_text(page_draw, col_x + col_w // 2, top_y, figure_text, number_font, ACCENT_RED)
-        centered_text(page_draw, col_x + col_w // 2, top_y + 68, figure_label, label_font, INK)
-        has_next_col = col_index < len(data.DAY_NUMBERS) - 1
-        if has_next_col:
-            page_draw.line((col_x + col_w, top_y + 6, col_x + col_w, top_y + 104), fill=(178, 168, 144), width=1)
-        col_index = col_index + 1
-    return top_y + 112
+PIN_NUDGE = {1: (0, -4), 4: (-12, -8), 5: (10, 6), 6: (8, 8), 9: (-14, 2)}
 
 
-def draw_tally(page_draw, top_y):
-    bar_h = 48
-    segment_count = len(data.REGION_TALLY)
-    base_w = 150
-    total_count = 0
-    for region_name, region_count, region_color in data.REGION_TALLY:
-        total_count = total_count + region_count
-    extra_w = CONTENT_W - base_w * segment_count
-    segment_x = MARGIN
-    label_font = load_font("sans-xbold", 25)
-    for region_name, region_count, region_color in data.REGION_TALLY:
-        segment_w = base_w + int(extra_w * region_count / total_count)
-        segment_box = (segment_x, top_y, segment_x + segment_w, top_y + bar_h)
-        page_draw.rectangle(segment_box, fill=region_color)
-        segment_label = region_name + " " + str(region_count)
-        centered_text(page_draw, segment_x + segment_w // 2, top_y + 11, segment_label, label_font, (250, 248, 240))
-        segment_x = segment_x + segment_w
-    return top_y + bar_h
+def note_overflow(message):
+    OVERFLOW_NOTES.append(message)
 
 
-def draw_card_frame(page_draw, box):
-    page_draw.rectangle(box, fill=CARD_BG)
-    page_draw.rectangle(box, outline=RULE, width=2)
-    return box
+def tally_counts():
+    counts = {}
+    for region in REGION_ORDER:
+        counts[region] = 0
+    for story in HERO_STORIES + MID_STORIES:
+        counts[story["region"]] += 1
+    for region in BRIEF_REGIONS:
+        counts[region] += 1
+    return counts
 
 
-def draw_badge(page_draw, cx, cy, number, radius, font_size):
-    badge_box = (cx - radius, cy - radius, cx + radius, cy + radius)
-    page_draw.ellipse(badge_box, fill=ACCENT_RED)
-    badge_font = load_font("sans-xbold", font_size)
-    badge_label = str(number)
-    badge_width = page_draw.textlength(badge_label, font=badge_font)
-    page_draw.text((cx - badge_width / 2, cy - font_size // 2 - 2), badge_label, font=badge_font, fill=(252, 250, 244))
-    return badge_box
+def fit_block(text, kind, max_width, max_lines, start_size, floor_size):
+    size = start_size
+    font = load_font(kind, size)
+    lines = wrap_text(text, font, max_width)
+    while len(lines) > max_lines and size > floor_size:
+        size -= 1
+        font = load_font(kind, size)
+        lines = wrap_text(text, font, max_width)
+    fitted = (font, lines)
+    return fitted
 
 
-def draw_hero_card(page, page_draw, card, box):
-    draw_card_frame(page_draw, box)
-    pad = 18
-    scene_w = (box[2] - box[0]) - 2 * pad
-    scene_img = build_scene(card["scene"], scene_w, 170)
-    page.paste(scene_img, (box[0] + pad, box[1] + pad))
-    pen_y = box[1] + pad + 170 + 12
-    draw_badge(page_draw, box[0] + pad + 17, pen_y + 15, card["num"], 17, 21)
-    kicker_font = load_font("sans-xbold", 21)
-    page_draw.text((box[0] + pad + 46, pen_y + 4), card["kicker"], font=kicker_font, fill=ACCENT_RED)
-    place_font = load_font("sans-bold", 18)
-    place_width = page_draw.textlength(card["place"], font=place_font)
-    page_draw.text((box[2] - pad - place_width, pen_y + 6), card["place"], font=place_font, fill=MUTED)
-    pen_y = pen_y + 38
-    headline_font = load_font("serif-xbold", 39)
-    headline_h = draw_wrapped(page_draw, (box[0] + pad, pen_y), card["headline"], headline_font, INK, scene_w, 43, 3)
-    pen_y = pen_y + headline_h + 6
-    summary_font = load_font("sans", 24)
-    summary_h = draw_wrapped(page_draw, (box[0] + pad, pen_y), card["summary"], summary_font, (44, 42, 38), scene_w, 32, 3)
-    pen_y = pen_y + summary_h + 8
-    page_draw.line((box[0] + pad, pen_y, box[2] - pad, pen_y), fill=(190, 180, 156), width=1)
-    source_font = load_font("sans-bold", 18)
-    source_text = "SOURCE - " + card["source"].upper()
-    page_draw.text((box[0] + pad, pen_y + 7), source_text, font=source_font, fill=MUTED)
-    has_chip = card["chip"] != ""
-    if has_chip:
-        chip_font = load_font("sans-xbold", 19)
-        chip_w = page_draw.textlength(card["chip"], font=chip_font) + 18
-        chip(page_draw, (box[2] - pad - chip_w, pen_y + 4), card["chip"], (226, 218, 192), (110, 60, 30))
-    return box
+def draw_masthead(pen, y):
+    left_font = load_font("sans_bold", 15)
+    right_font = load_font("sans_bold", 11)
+    pen.text((MARGIN, y), MASTHEAD_KICKER_LEFT, font=left_font, fill=RED)
+    right_wide = text_width_px(MASTHEAD_KICKER_RIGHT, right_font)
+    pen.text((MARGIN + CONTENT_W - right_wide, y + 3), MASTHEAD_KICKER_RIGHT, font=right_font, fill=INK_SOFT)
+    rule_y = y + 24
+    draw_rule(pen, MARGIN, rule_y, CONTENT_W, weight=2)
+    date_font = fit_font_size(MASTHEAD_DATE, "serif_bold", CONTENT_W, 92, 60)
+    date_high = text_height_px(MASTHEAD_DATE, date_font)
+    pen.text((MARGIN, rule_y + 6), MASTHEAD_DATE, font=date_font, fill=INK)
+    next_y = rule_y + 6 + date_high + 4
+    return next_y
 
 
-def draw_mid_card(page, page_draw, card, box):
-    draw_card_frame(page_draw, box)
-    pad = 12
-    scene_w = (box[2] - box[0]) - 2 * pad
-    scene_img = build_scene(card["scene"], scene_w, 74)
-    page.paste(scene_img, (box[0] + pad, box[1] + pad))
-    pen_y = box[1] + pad + 74 + 8
-    draw_badge(page_draw, box[0] + pad + 12, pen_y + 11, card["num"], 12, 15)
-    kicker_font = load_font("sans-xbold", 16)
-    page_draw.text((box[0] + pad + 32, pen_y + 2), card["kicker"], font=kicker_font, fill=ACCENT_RED)
-    has_chip = card["chip"] != ""
-    if has_chip:
-        chip_font = load_font("sans-xbold", 15)
-        chip_w = page_draw.textlength(card["chip"], font=chip_font) + 14
-        chip_box = (box[2] - pad - chip_w, pen_y, box[2] - pad, pen_y + 22)
-        page_draw.rectangle(chip_box, fill=(226, 218, 192))
-        page_draw.text((chip_box[0] + 7, pen_y + 3), card["chip"], font=chip_font, fill=(110, 60, 30))
-    pen_y = pen_y + 27
-    headline_font = load_font("serif-bold", 27)
-    headline_h = draw_wrapped(page_draw, (box[0] + pad, pen_y), card["headline"], headline_font, INK, scene_w, 29, 2)
-    pen_y = pen_y + headline_h + 3
-    summary_font = load_font("sans", 18)
-    summary_h = draw_wrapped(page_draw, (box[0] + pad, pen_y), card["summary"], summary_font, (44, 42, 38), scene_w, 22, 2)
-    pen_y = pen_y + summary_h + 5
-    source_font = load_font("sans-bold", 14)
-    source_text = card["source"].upper()
-    page_draw.text((box[0] + pad, pen_y), source_text, font=source_font, fill=MUTED)
-    return box
+def draw_subhead(pen, y):
+    font = fit_font_size(SUBHEAD_LINE, "serif_italic", CONTENT_W, 20, 14)
+    wide = text_width_px(SUBHEAD_LINE, font)
+    pen.text((MARGIN + (CONTENT_W - wide) // 2, y), SUBHEAD_LINE, font=font, fill=INK_SOFT)
+    next_y = y + text_height_px(SUBHEAD_LINE, font) + 10
+    return next_y
 
 
-def draw_date_check(page_draw, top_y):
-    box = (MARGIN, top_y, PAGE_W - MARGIN, top_y + 112)
-    page_draw.rectangle(box, fill=(238, 231, 205), outline=RULE, width=2)
-    check_font = load_font("sans-bold", 20)
-    small_font = load_font("sans", 17)
-    page_draw.text((MARGIN + 18, top_y + 8), "DATE CHECK - " + data.DATE_CHECK_LINE, font=check_font, fill=INK)
-    left_out_text = "Left out as other days' news: " + data.LEFT_OUT
-    left_h = draw_wrapped(page_draw, (MARGIN + 18, top_y + 38), left_out_text, small_font, (70, 64, 52), CONTENT_W - 36, 22, 2)
-    bottom_line = "Not yet news: " + data.NOT_YET + "   " + data.DISCLAIMER_LINE
-    page_draw.text((MARGIN + 18, top_y + 38 + left_h + 8), bottom_line, font=small_font, fill=(70, 64, 52))
-    return top_y + 112
+def draw_number_strip(pen, y):
+    cell_wide = CONTENT_W // len(NUMBER_STRIP)
+    strip_high = 66
+    value_font = load_font("serif_bold", 34)
+    label_font = load_font("sans", 11)
+    for index in range(len(NUMBER_STRIP)):
+        value, label = NUMBER_STRIP[index]
+        cell_x = MARGIN + index * cell_wide
+        value_wide = text_width_px(value, value_font)
+        pen.text((cell_x + (cell_wide - value_wide) // 2, y), value, font=value_font, fill=RED)
+        label_lines = wrap_text(label, label_font, cell_wide - 14)
+        if len(label_lines) > 2:
+            note_overflow("strip label too long: " + label)
+            label_lines = label_lines[:2]
+        line_y = y + 42
+        for line in label_lines:
+            line_wide = text_width_px(line, label_font)
+            pen.text((cell_x + (cell_wide - line_wide) // 2, line_y), line, font=label_font, fill=INK_SOFT)
+            line_y += 13
+        if index > 0:
+            pen.line([(cell_x, y + 4), (cell_x, y + strip_high - 8)], fill=CARD_EDGE, width=1)
+    next_y = y + strip_high + 8
+    return next_y
 
 
-def draw_bottom(page, page_draw, top_y):
-    header_font = load_font("sans-xbold", 23)
-    page_draw.text((MARGIN, top_y), "WHERE IT HAPPENED", font=header_font, fill=ACCENT_RED)
-    map_w = 640
-    map_h = 296
-    map_box = (MARGIN, top_y + 30, MARGIN + map_w, top_y + 30 + map_h)
-    draw_world_map(page, map_box, LAND_FILL, SEA_FILL)
-    page_draw.rectangle(map_box, outline=RULE, width=2)
-    all_cards = data.HERO_CARDS + data.MID_CARDS
-    for card in all_cards:
-        pin_xy = map_point(card["lon"], card["lat"], map_box)
-        pin_offset = PIN_OFFSETS.get(card["num"])
-        pin_at = pin_xy
-        if pin_offset is not None:
-            pin_at = (pin_xy[0] + pin_offset[0], pin_xy[1] + pin_offset[1])
-            page_draw.line((pin_xy[0], pin_xy[1], pin_at[0], pin_at[1]), fill=RULE, width=2)
-        draw_map_pin(page_draw, pin_at, card["num"], PIN_FILL, (252, 250, 244))
-    for brief_num, brief_place, brief_text, brief_source, brief_lon, brief_lat in data.BRIEFS:
-        dot_xy = map_point(brief_lon, brief_lat, map_box)
-        dot_r = 5
-        dot_box = (dot_xy[0] - dot_r, dot_xy[1] - dot_r, dot_xy[0] + dot_r, dot_xy[1] + dot_r)
-        page_draw.ellipse(dot_box, fill=(70, 74, 70), outline=(252, 250, 244), width=1)
-    caption_font = load_font("sans", 15)
-    page_draw.text((MARGIN, top_y + 30 + map_h + 8), "Each number is the story with that number on this page.", font=caption_font, fill=MUTED)
-    briefs_x = MARGIN + map_w + 28
-    briefs_w = PAGE_W - MARGIN - briefs_x
-    briefs_title = "ALSO ON FRIDAY 20 NOVEMBER - " + str(len(data.BRIEFS)) + " MORE STORIES"
-    page_draw.text((briefs_x, top_y), briefs_title, font=header_font, fill=ACCENT_RED)
-    brief_font = load_font("sans", 16)
-    place_font = load_font("sans-bold", 16)
-    col_w = briefs_w // 2
-    rows_per_col = 11
-    brief_index = 0
-    for brief in data.BRIEFS:
-        brief_num, brief_place, brief_text, brief_source, brief_lon, brief_lat = brief
-        brief_col = brief_index // rows_per_col
-        brief_row = brief_index % rows_per_col
-        brief_x = briefs_x + brief_col * col_w
-        brief_y = top_y + 30 + brief_row * 27
-        number_label = str(brief_num) + ". "
-        number_w = page_draw.textlength(number_label, font=place_font)
-        place_label = brief_place + " - "
-        place_w = page_draw.textlength(place_label, font=place_font)
-        full_line = brief_text + " (" + brief_source + ")"
-        page_draw.text((brief_x, brief_y), number_label, font=place_font, fill=ACCENT_RED)
-        page_draw.text((brief_x + number_w, brief_y), place_label, font=place_font, fill=INK)
-        page_draw.text((brief_x + number_w + place_w, brief_y), full_line, font=brief_font, fill=(44, 42, 38))
-        brief_index = brief_index + 1
-    return top_y + 30 + map_h + 22
+def draw_tally_bar(pen, y):
+    counts = tally_counts()
+    total = 0
+    for region in REGION_ORDER:
+        total += counts[region]
+    raw_widths = {}
+    for region in REGION_ORDER:
+        raw_widths[region] = counts[region] * CONTENT_W // total
+    min_wide = 52
+    widths = {}
+    for region in REGION_ORDER:
+        widths[region] = raw_widths[region]
+        if widths[region] < min_wide:
+            widths[region] = min_wide
+    assigned = 0
+    for region in REGION_ORDER:
+        assigned += widths[region]
+    widths["EUROPE"] += CONTENT_W - assigned
+    bar_high = 26
+    bar_x = MARGIN
+    for region in REGION_ORDER:
+        wide = widths[region]
+        pen.rectangle([bar_x, y, bar_x + wide, y + bar_high], fill=REGION_PAINT[region])
+        label = region + " " + str(counts[region])
+        font = load_font("sans_bold", 12)
+        if wide < 96:
+            font = load_font("sans_bold", 10)
+            name_wide = text_width_px(region, font)
+            pen.text((bar_x + (wide - name_wide) // 2, y + 2), region, font=font, fill=(255, 255, 255))
+            count_text = str(counts[region])
+            count_wide = text_width_px(count_text, font)
+            pen.text((bar_x + (wide - count_wide) // 2, y + 14), count_text, font=font, fill=(255, 255, 255))
+        if wide >= 96:
+            label_wide = text_width_px(label, font)
+            pen.text((bar_x + (wide - label_wide) // 2, y + 6), label, font=font, fill=(255, 255, 255))
+        bar_x += wide
+    next_y = y + bar_high + 8
+    return next_y
 
 
-def add_paper_grain(page):
-    noise_img = Image.effect_noise((PAGE_W, PAGE_H), 7).convert("RGB")
-    grained_page = Image.blend(page, noise_img, 0.025)
-    return grained_page
+def draw_hero_card(page, pen, box, story):
+    x0, y0, x1, y1 = box
+    draw_card_frame(pen, box)
+    scene_box = (x0 + 6, y0 + 6, x1 - 6, y0 + 114)
+    paint_scene(page, story["scene"], scene_box)
+    pen.rectangle(scene_box, outline=(90, 84, 70), width=1)
+    kicker_y = y0 + 122
+    draw_number_badge(pen, x0 + 18, kicker_y + 8, story["num"], radius=11)
+    kicker_font = load_font("sans_bold", 11)
+    pen.text((x0 + 34, kicker_y), story["kicker"], font=kicker_font, fill=RED)
+    dateline_font = load_font("sans_bold", 10)
+    dateline_wide = text_width_px(story["dateline"], dateline_font)
+    pen.text((x1 - 8 - dateline_wide, kicker_y + 1), story["dateline"], font=dateline_font, fill=INK_SOFT)
+    head_font, head_lines = fit_block(story["headline"], "serif_bold", x1 - x0 - 16, 2, 20, 16)
+    if len(head_lines) > 2:
+        note_overflow("hero headline overflows: " + story["headline"])
+        head_lines = head_lines[:2]
+    head_y = draw_wrapped(pen, x0 + 8, y0 + 142, head_lines, head_font, leading=2)
+    deck_font, deck_lines = fit_block(story["deck"], "sans", x1 - x0 - 16, 3, 12, 10)
+    if len(deck_lines) > 3:
+        note_overflow("hero deck overflows: " + story["headline"])
+        deck_lines = deck_lines[:3]
+    deck_y = draw_wrapped(pen, x0 + 8, head_y + 2, deck_lines, deck_font, leading=2)
+    source_font = load_font("sans_bold", 9)
+    pen.text((x0 + 8, y1 - 14), "SOURCE - " + story["source"], font=source_font, fill=MUTED)
+    if story["chip"]:
+        chip_wide = draw_chip(pen, x1 - 8 - 62, y1 - 17, story["chip"])
+        _ = chip_wide
+    _ = deck_y
+    return y1
 
 
-def check_fit(page_draw):
-    brief_font = load_font("sans", 16)
-    place_font = load_font("sans-bold", 16)
-    col_w = (PAGE_W - MARGIN - (MARGIN + 640 + 28)) // 2
-    overflow_count = 0
-    for brief in data.BRIEFS:
-        brief_num, brief_place, brief_text, brief_source, brief_lon, brief_lat = brief
-        line_w = page_draw.textlength(str(brief_num) + ". ", font=place_font)
-        line_w = line_w + page_draw.textlength(brief_place + " - ", font=place_font)
-        line_w = line_w + page_draw.textlength(brief_text + " (" + brief_source + ")", font=brief_font)
-        brief_overflows = line_w > col_w
-        if brief_overflows:
-            print("BRIEF OVERFLOW", brief_num, int(line_w), "vs", col_w)
-            overflow_count = overflow_count + 1
-    headline_font = load_font("serif-xbold", 39)
-    for card in data.HERO_CARDS:
-        hero_lines = wrap_lines(page_draw, card["headline"], headline_font, 588)
-        headline_overflows = len(hero_lines) > 2
-        if headline_overflows:
-            print("HERO HEADLINE 3 LINES", card["num"], hero_lines)
-            overflow_count = overflow_count + 1
-    mid_headline_font = load_font("serif-bold", 27)
-    mid_summary_font = load_font("sans", 18)
-    for card in data.MID_CARDS:
-        mid_lines = wrap_lines(page_draw, card["headline"], mid_headline_font, 347)
-        mid_headline_overflows = len(mid_lines) > 2
-        if mid_headline_overflows:
-            print("MID HEADLINE OVERFLOW", card["num"], mid_lines)
-            overflow_count = overflow_count + 1
-        mid_summary_lines = wrap_lines(page_draw, card["summary"], mid_summary_font, 347)
-        mid_summary_overflows = len(mid_summary_lines) > 2
-        if mid_summary_overflows:
-            print("MID SUMMARY OVERFLOW", card["num"], mid_summary_lines)
-            overflow_count = overflow_count + 1
-    hero_summary_font = load_font("sans", 24)
-    for card in data.HERO_CARDS:
-        hero_summary_lines = wrap_lines(page_draw, card["summary"], hero_summary_font, 588)
-        hero_summary_overflows = len(hero_summary_lines) > 3
-        if hero_summary_overflows:
-            print("HERO SUMMARY OVERFLOW", card["num"], hero_summary_lines)
-            overflow_count = overflow_count + 1
-    print("fit check overflow count:", overflow_count)
-    return overflow_count
+def draw_mid_card(page, pen, box, story):
+    x0, y0, x1, y1 = box
+    draw_card_frame(pen, box)
+    scene_box = (x0 + 5, y0 + 5, x1 - 5, y0 + 51)
+    paint_scene(page, story["scene"], scene_box)
+    pen.rectangle(scene_box, outline=(90, 84, 70), width=1)
+    kicker_y = y0 + 56
+    draw_number_badge(pen, x0 + 13, kicker_y + 6, story["num"], radius=9)
+    kicker_font = load_font("sans_bold", 9)
+    pen.text((x0 + 26, kicker_y), story["kicker"], font=kicker_font, fill=RED)
+    if story["chip"]:
+        chip_font = load_font("sans_bold", 8)
+        chip_wide = text_width_px(story["chip"], chip_font) + 10
+        pen.rounded_rectangle(
+            [x1 - 6 - chip_wide, kicker_y - 1, x1 - 6, kicker_y + 11],
+            radius=2,
+            fill=(232, 222, 200),
+            outline=RED,
+            width=1,
+        )
+        pen.text((x1 - 6 - chip_wide + 5, kicker_y), story["chip"], font=chip_font, fill=RED)
+    head_font, head_lines = fit_block(story["headline"], "serif_bold", x1 - x0 - 12, 2, 14, 11)
+    if len(head_lines) > 2:
+        note_overflow("mid headline overflows: " + story["headline"])
+        head_lines = head_lines[:2]
+    head_y = draw_wrapped(pen, x0 + 6, y0 + 70, head_lines, head_font, leading=1)
+    deck_font, deck_lines = fit_block(story["deck"], "sans", x1 - x0 - 12, 2, 10, 8)
+    if len(deck_lines) > 2:
+        note_overflow("mid deck overflows: " + story["headline"])
+        deck_lines = deck_lines[:2]
+    deck_y = draw_wrapped(pen, x0 + 6, head_y + 1, deck_lines, deck_font, leading=1)
+    source_font = load_font("sans", 8)
+    pen.text((x0 + 6, y1 - 11), story["source"], font=source_font, fill=MUTED)
+    _ = deck_y
+    return y1
 
 
-def compose_page():
+def draw_date_check(pen, y):
+    box = (MARGIN, y, MARGIN + CONTENT_W, y + 46)
+    pen.rectangle(box, fill=(244, 238, 222), outline=RULE, width=1)
+    title_font = load_font("sans_bold", 11)
+    pen.text((MARGIN + 10, y + 5), DATE_CHECK_TITLE, font=title_font, fill=RED)
+    line_font = load_font("sans", 11)
+    line_y = y + 5
+    for line in DATE_CHECK_LINES:
+        line_wide = text_width_px(line, line_font)
+        if line_wide > CONTENT_W - 20:
+            note_overflow("date check line too long")
+        pen.text((MARGIN + 92, line_y), line, font=line_font, fill=INK)
+        line_y += 14
+    next_y = y + 46 + 8
+    return next_y
+
+
+def project_point(lon, lat, box):
+    x0, y0, x1, y1 = box
+    pad = 4
+    span_x = x1 - x0 - pad * 2
+    span_y = y1 - y0 - pad * 2
+    px = x0 + pad + (lon + 180.0) / 360.0 * span_x
+    py = y0 + pad + (78.0 - lat) / 136.0 * span_y
+    return (int(px), int(py))
+
+
+def draw_world_map(pen, box):
+    pen.rectangle(box, fill=(232, 238, 240), outline=CARD_EDGE, width=1)
+    for shape in CONTINENTS:
+        points = []
+        for lon, lat in shape:
+            points.append(project_point(lon, lat, box))
+        pen.polygon(points, fill=(208, 188, 138), outline=(150, 132, 88))
+    for brief in BRIEF_ITEMS:
+        _, _, _, _, lon, lat = brief
+        dot_x, dot_y = project_point(lon, lat, box)
+        pen.ellipse([dot_x - 2, dot_y - 2, dot_x + 2, dot_y + 2], fill=(60, 56, 48))
+    for story in HERO_STORIES + MID_STORIES:
+        pin_x, pin_y = project_point(story["lon"], story["lat"], box)
+        nudge = PIN_NUDGE.get(story["num"], (0, 0))
+        draw_number_badge(pen, pin_x + nudge[0], pin_y + nudge[1], story["num"], radius=10)
+
+
+def shrink_brief_line(head, body, tail, font, max_width):
+    words = body.split(" ")
+    joined = " ".join(words)
+    full = head + joined + tail
+    while text_width_px(full, font) > max_width and len(words) > 3:
+        words = words[:-1]
+        joined = " ".join(words) + " \u2026"
+        full = head + joined + tail
+    return full
+
+
+def draw_briefs(pen, x0, y, width):
+    heading_font = load_font("sans_bold", 12)
+    pen.text((x0, y), BRIEFS_HEADING, font=heading_font, fill=RED)
+    list_y = y + 18
+    col_wide = (width - 10) // 2
+    brief_font = load_font("sans", 9)
+    for index in range(len(BRIEF_ITEMS)):
+        num, city, text, source, _, _ = BRIEF_ITEMS[index]
+        column = 0
+        row = index
+        if index >= 11:
+            column = 1
+            row = index - 11
+        item_x = x0 + column * (col_wide + 10)
+        item_y = list_y + row * 13
+        head = str(num) + ". " + city + " - "
+        tail = " (" + source + ")"
+        line = shrink_brief_line(head, text, tail, brief_font, col_wide)
+        pen.text((item_x, item_y), line, font=brief_font, fill=INK)
+    next_y = list_y + 11 * 13 + 4
+    return next_y
+
+
+def draw_bottom(pen, y):
+    map_x0 = MARGIN
+    map_wide = 306
+    briefs_x0 = MARGIN + map_wide + 12
+    briefs_wide = CONTENT_W - map_wide - 12
+    heading_font = load_font("sans_bold", 12)
+    pen.text((map_x0, y), MAP_HEADING, font=heading_font, fill=RED)
+    map_box = (map_x0, y + 18, map_x0 + map_wide, y + 18 + 118)
+    draw_world_map(pen, map_box)
+    caption_font = load_font("sans", 9)
+    pen.text((map_x0, y + 18 + 118 + 4), MAP_CAPTION, font=caption_font, fill=MUTED)
+    briefs_end = draw_briefs(pen, briefs_x0, y, briefs_wide)
+    next_y = briefs_end
+    if map_box[3] + 16 > next_y:
+        next_y = map_box[3] + 16
+    return next_y
+
+
+def draw_footer(pen, y):
+    font = load_font("sans", 10)
+    wide = text_width_px(FOOTER_LINE, font)
+    pen.text((MARGIN + (CONTENT_W - wide) // 2, y), FOOTER_LINE, font=font, fill=MUTED)
+    return y + 16
+
+
+def render_page():
     page = Image.new("RGB", (PAGE_W, PAGE_H), PAPER)
-    page_draw = ImageDraw.Draw(page)
-    check_fit(page_draw)
-    pen_y = draw_header(page_draw)
-    pen_y = draw_numbers(page_draw, pen_y + 12)
-    pen_y = draw_tally(page_draw, pen_y + 14)
-    page_draw.line((MARGIN, pen_y + 6, PAGE_W - MARGIN, pen_y + 6), fill=INK, width=2)
-    cards_top = pen_y + 18
-    hero_gap = 24
-    hero_w = (CONTENT_W - 2 * hero_gap) // 3
-    hero_h = 470
-    hero_index = 0
-    for hero_card in data.HERO_CARDS:
-        hero_x = MARGIN + hero_index * (hero_w + hero_gap)
-        hero_box = (hero_x, cards_top, hero_x + hero_w, cards_top + hero_h)
-        draw_hero_card(page, page_draw, hero_card, hero_box)
-        hero_index = hero_index + 1
-    mid_top = cards_top + hero_h + 12
-    mid_gap = 16
-    mid_w = (CONTENT_W - 4 * mid_gap) // 5
-    mid_h = 252
-    mid_index = 0
-    for mid_card in data.MID_CARDS:
-        mid_row = mid_index // 5
-        mid_col = mid_index % 5
-        mid_x = MARGIN + mid_col * (mid_w + mid_gap)
-        mid_y = mid_top + mid_row * (mid_h + 12)
-        mid_box = (mid_x, mid_y, mid_x + mid_w, mid_y + mid_h)
-        draw_mid_card(page, page_draw, mid_card, mid_box)
-        mid_index = mid_index + 1
-    after_cards = mid_top + 2 * mid_h + 12
-    check_y = draw_date_check(page_draw, after_cards + 8)
-    bottom_end = draw_bottom(page, page_draw, check_y + 12)
-    sources_font = load_font("sans", 14)
-    centered_text(page_draw, PAGE_W // 2, bottom_end + 4, data.SOURCES_LINE, sources_font, MUTED)
-    grained_page = add_paper_grain(page)
-    return grained_page
+    pen = ImageDraw.Draw(page)
+    y = 12
+    y = draw_masthead(pen, y)
+    y = draw_subhead(pen, y)
+    y = draw_number_strip(pen, y)
+    y = draw_tally_bar(pen, y)
+    hero_high = 246
+    hero_wide = (CONTENT_W - 22) // 3
+    for index in range(len(HERO_STORIES)):
+        card_x = MARGIN + index * (hero_wide + 11)
+        draw_hero_card(page, pen, (card_x, y, card_x + hero_wide, y + hero_high), HERO_STORIES[index])
+    y += hero_high + 8
+    mid_high = 132
+    mid_wide = (CONTENT_W - 40) // 5
+    for row in range(2):
+        for col in range(5):
+            story = MID_STORIES[row * 5 + col]
+            card_x = MARGIN + col * (mid_wide + 10)
+            card_y = y + row * (mid_high + 8)
+            draw_mid_card(page, pen, (card_x, card_y, card_x + mid_wide, card_y + mid_high), story)
+    y += mid_high * 2 + 8 + 8
+    y = draw_date_check(pen, y)
+    y = draw_bottom(pen, y)
+    y = draw_footer(pen, y + 4)
+    if y > PAGE_H - 4:
+        note_overflow("page bottom overflows by " + str(y - PAGE_H + 4) + " px")
+    return page
+
+
+def save_page(page, path):
+    page.save(path, format="PNG", optimize=True)
+    size = os.path.getsize(path)
+    return size
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        chunk = handle.read(65536)
+        while chunk:
+            digest.update(chunk)
+            chunk = handle.read(65536)
+    return digest.hexdigest()
 
 
 def main():
-    output_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", ".")
-    rendered_page = compose_page()
-    entry_img = rendered_page.resize((1024, 1024), Image.LANCZOS)
-    entry_img = entry_img.convert("RGB")
-    entry_path = os.path.join(output_dir, "entry.png")
-    entry_img.save(entry_path, format="PNG", optimize=True)
-    entry_size = os.path.getsize(entry_path)
-    size_limit = 1024 * 1024
-    if entry_size > size_limit:
-        paletted_img = entry_img.quantize(colors=256, dither=Image.FLOYDSTEINBERG)
-        paletted_img.save(entry_path, format="PNG", optimize=True)
-        entry_size = os.path.getsize(entry_path)
-    running_for_grader = "MAKEFUN_OUTPUT_DIR" in os.environ
-    if running_for_grader is False:
-        master_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "master-2048.png")
-        rendered_page.save(master_path, format="PNG", optimize=True)
-    print("wrote", entry_path, entry_size, "bytes")
+    page = render_page()
+    here = os.path.dirname(os.path.abspath(__file__))
+    out_path = os.path.join(here, OUTPUT_NAME)
+    size = save_page(page, out_path)
+    if size > SIZE_CAP:
+        reduced = page.convert("P", palette=Image.ADAPTIVE, colors=256)
+        reduced.save(out_path, format="PNG", optimize=True)
+        size = os.path.getsize(out_path)
+    digest = sha256_file(out_path)
+    counts = tally_counts()
+    total = 0
+    for region in REGION_ORDER:
+        total += counts[region]
+    print("rendered " + OUTPUT_NAME + ": " + str(page.size[0]) + "x" + str(page.size[1]))
+    print("bytes " + str(size) + " cap " + str(SIZE_CAP) + " sha256 " + digest)
+    print("stories " + str(total) + " overflow " + str(len(OVERFLOW_NOTES)))
+    for note in OVERFLOW_NOTES:
+        print("OVERFLOW: " + note)
+    if len(OVERFLOW_NOTES) > 0:
+        sys.exit(1)
+    if size > SIZE_CAP:
+        sys.exit(1)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
-    main()
+    try: main()
+    except SystemExit as sysExit:
+        raise sysExit
+    except Exception as renderProblem:
+        print("render failed: " + str(renderProblem))
+        sys.exit(1)

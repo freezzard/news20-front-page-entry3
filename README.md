@@ -1,3 +1,9 @@
+[![make.fun · news-image-20261120](https://make.fun/badge/news-image-20261120.svg)](https://make.fun/bounty/news-image-20261120?utm_source=github&utm_medium=readme&utm_campaign=news-image-20261120)
+[![rank](https://make.fun/badge/news-image-20261120/freezzard/news20-front-page-entry3/rank.svg)](https://make.fun/bounty/news-image-20261120/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=news-image-20261120)
+[![reward](https://make.fun/badge/news-image-20261120/freezzard/news20-front-page-entry3/reward.svg)](https://make.fun/bounty/news-image-20261120?utm_source=github&utm_medium=readme&utm_campaign=news-image-20261120)
+
+Built for the bounty: https://make.fun/bounty/news-image-20261120
+
 # Friday 20 November 2026 — The World in One Day
 
 A one-page newspaper front page that sums up Friday 20 November 2026
